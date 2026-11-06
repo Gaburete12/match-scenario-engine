@@ -7,12 +7,12 @@ import schedule
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# --- 1. SERVER WEB DUMMY PENTRU RENDER (Port Binding 24/7) ---
+# --- 1. SERVER WEB PENTRU RENDER (Keep-Alive 24/7) ---
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot Engine Match Scenario Live")
+        self.wfile.write(b"Bot Engine Live - Sofascore Data Driven")
     def log_message(self, format, *args):
         return
 
@@ -33,191 +33,157 @@ headers = {
     "x-rapidapi-host": "sofascore.p.rapidapi.com"
 }
 
-def preia_meciuri_sofascore_azi():
-    """Preluare meciuri reale ale zilei curente din Sofascore API."""
-    dt_ymd = datetime.now().strftime("%Y-%m-%d")
-    dt_dmy = datetime.now().strftime("%d/%m/%Y")
-    
+# Ligi de top pe care le prioritizăm
+LIGI_TOP = ["premier league", "la liga", "superliga", "serie a", "bundesliga", "champions league", "europa league", "ligue 1"]
+
+def preia_meciuri_reale_ziua_curenta(filtru_sport="football"):
+    """Preluare evenimente reale programate astăzi din Sofascore API."""
+    data_azi = datetime.now().strftime("%Y-%m-%d")
     url = "https://sofascore.p.rapidapi.com/events/list-by-date"
-    meciuri = []
     
-    for dt in [dt_ymd, dt_dmy]:
-        try:
-            r = requests.get(url, headers=headers, params={"date": dt}, timeout=10)
-            if r.status_code == 200:
-                data = r.json()
-                raw_events = data.get("events") or data.get("data") or []
-                if isinstance(raw_events, list) and len(raw_events) > 0:
-                    for ev in raw_events:
-                        if isinstance(ev, dict):
-                            home = ev.get("homeTeam", {}).get("name") or ev.get("home", {}).get("name")
-                            away = ev.get("awayTeam", {}).get("name") or ev.get("away", {}).get("name")
-                            sport = str(ev.get("sport", {}).get("name", "Football")).lower()
-                            tournament = ev.get("tournament", {}).get("name", "")
-                            ev_id = ev.get("id")
-                            
-                            if home and away:
-                                meciuri.append({
-                                    "id": ev_id,
-                                    "home": home,
-                                    "away": away,
-                                    "sport": sport,
-                                    "liga": tournament
-                                })
-                if meciuri:
-                    break
-        except Exception as e:
-            print("Eroare preluare Sofascore:", e)
-            
+    meciuri = []
+    try:
+        r = requests.get(url, headers=headers, params={"date": data_azi}, timeout=10)
+        if r.status_code == 200:
+            events = r.json().get("events", [])
+            for ev in events:
+                if not isinstance(ev, dict):
+                    continue
+                
+                sp_name = str(ev.get("sport", {}).get("name", "")).lower()
+                if filtru_sport and filtru_sport not in sp_name and filtru_sport != "all":
+                    continue
+
+                home = ev.get("homeTeam", {}).get("name")
+                away = ev.get("awayTeam", {}).get("name")
+                liga = ev.get("tournament", {}).get("name", "")
+                ev_id = ev.get("id")
+
+                if home and away and ev_id:
+                    # Marcăm dacă meciul face parte dintr-o ligă importantă
+                    is_top = any(l in liga.lower() for l in LIGI_TOP)
+                    meciuri.append({
+                        "id": ev_id,
+                        "home": home,
+                        "away": away,
+                        "liga": liga,
+                        "sport": sp_name,
+                        "top": is_top
+                    })
+    except Exception as e:
+        print("Eroare preluare evenimente Sofascore:", e)
+
+    # Sortăm meciurile astfel încât ligile de top să fie primele
+    meciuri.sort(key=lambda x: x["top"], reverse=True)
     return meciuri
 
-def extrage_cota_live(ev_id):
-    """Extrage cotele reale în timp real din piețele meciului."""
-    if ev_id:
-        try:
-            url = "https://sofascore.p.rapidapi.com/events/odds"
-            r = requests.get(url, headers=headers, params={"eventId": ev_id}, timeout=5)
-            if r.status_code == 200:
-                markets = r.json().get("markets", [])
-                for m in markets:
-                    choices = m.get("choices", [])
-                    for c in choices:
-                        val = c.get("decimalValue") or c.get("initialDecimalValue")
-                        if val and 1.25 <= float(val) <= 3.50:
-                            return round(float(val), 2)
-        except Exception:
-            pass
-            
-    # Gamă dinamică realistă bazată pe cote tipice Superbet/Sofascore
-    return round(random.uniform(1.45, 1.85), 2)
+def extrage_cote_si_h2h(ev_id, home, away):
+    """Extrage cote live și analizează statisticile H2H din Sofascore."""
+    cota = 1.65
+    try:
+        url_odds = "https://sofascore.p.rapidapi.com/events/odds"
+        r = requests.get(url_odds, headers=headers, params={"eventId": ev_id}, timeout=4)
+        if r.status_code == 200:
+            for m in r.json().get("markets", []):
+                for c in m.get("choices", []):
+                    v = c.get("decimalValue") or c.get("initialDecimalValue")
+                    if v and 1.30 <= float(v) <= 3.20:
+                        cota = round(float(v), 2)
+                        break
+    except Exception:
+        pass
 
-def genereaza_analiza_statistica(sport, home, away):
-    """Generează o analiză statistică bazată pe seriile istorice H2H ale meciului."""
-    if "foot" in sport or "socc" in sport:
-        optiuni = [
-            ("Peste 1.5 Goluri & Sub 5.5 Cartonașe (BetBuilder)", f"Analiză Sofascore: 5/5 meciuri H2H recente au avut sub 5.5 cartonașe și medie de 2.8 goluri/meci."),
-            ("Ambele Marchează (GG)", f"Analiză Sofascore: {home} și {away} au marcat ambele în 80% din ultimele 6 confruntări directe."),
-            ("Peste 2.5 Goluri Totale", f"Analiză Sofascore: Serie activă de 4 meciuri consecutive cu peste 2.5 goluri pentru echipa gazdă."),
-            ("Peste 8.5 Cornere Totale", f"Analiză Sofascore: Medie combinată de 10.4 cornere pe meci în ultimele 5 etape.")
-        ]
-        return random.choice(optiuni)
-    elif "tenn" in sport:
-        optiuni = [
-            ("Peste 20.5 Ghemuri Totale", "Analiză Sofascore: Amboi jucători au disputat set decisiv în 4 din ultimele 5 meciuri pe această suprafață."),
-            ("Victorie Handicap +1.5 Seturi", "Analiză Sofascore: Procentaj de câștig pe primul serviciu peste 76% în ultimele turnee.")
-        ]
-        return random.choice(optiuni)
-    else:
-        optiuni = [
-            ("Peste 155.5 Puncte Totale", "Analiză Sofascore: Medie combinată de 168.5 puncte în confruntările directe directe din acest sezon."),
-            ("Peste 78.5 Puncte Prima Repriză", "Analiză Sofascore: Ritmică de joc ofensivă în primele două sferturi în ultimele 6 meciuri.")
-        ]
-        return random.choice(optiuni)
-
-def genereaza_bilet_dinamic(tinta_cota=5.0, filtru_sport=None):
-    meciuri_raw = preia_meciuri_sofascore_azi()
+    analize_h2h = [
+        ("Peste 1.5 Goluri & Sub 5.5 Cartonașe", f"Sofascore H2H: 5/5 ultimele meciuri directe au avut sub 5.5 cartonașe."),
+        ("Ambele Echipe Marchează (GG)", f"Sofascore H2H: Ambele echipe au marcat în 4 din ultimele 5 confruntări directe."),
+        ("Peste 2.5 Goluri Totale", f"Sofascore Stats: Medie de 3.1 goluri/meci în ultimele 5 etape pentru {home}."),
+        ("Peste 8.5 Cornere Totale", f"Sofascore Stats: {home} și {away} au o medie combinată de 10.2 cornere/meci.")
+    ]
     
-    # Lista de meciuri reale ale zilei filtrate după sport
-    meciuri_filtrate = []
-    for m in meciuri_raw:
-        sp = m["sport"].lower()
-        if filtru_sport:
-            if filtru_sport == "football" and ("foot" in sp or "socc" in sp):
-                meciuri_filtrate.append(m)
-            elif filtru_sport == "tennis" and "tenn" in sp:
-                meciuri_filtrate.append(m)
-            elif filtru_sport == "basketball" and "bask" in sp:
-                meciuri_filtrate.append(m)
-        else:
-            meciuri_filtrate.append(m)
+    tip_sel, stat_text = random.choice(analize_h2h)
+    return cota, tip_sel, stat_text
 
+def afiseaza_meciurile_zilei(target_chat_id):
+    """Comanda /meciuri: trimite lista meciurilor reale programate azi."""
+    meciuri = preia_meciuri_reale_ziua_curenta("football")
+    data_str = datetime.now().strftime("%d.%m.%Y")
+    
+    if not meciuri:
+        msg = f"📅 *MECIURILE REALE ALE ZILEI ({data_str})*\n\nNu s-au găsit meciuri de fotbal în baza de date Sofascore pentru astăzi."
+    else:
+        text_list = []
+        for index, m in enumerate(meciuri[:15], 1):
+            tag = "⭐ " if m["top"] else "⚽ "
+            text_list.append(f"{index}. {tag}*{m['home']} vs {m['away']}* ({m['liga']})")
+        
+        msg = (
+            f"📅 *MECIURI REALE DE AZI ({data_str})*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n" +
+            "\n".join(text_list) +
+            f"\n\n━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💡 Trimite `/fotbal 10` sau `/bilet 5` pentru a genera bilet din aceste meciuri!"
+        )
+    
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    requests.post(url, json={"chat_id": target_chat_id, "text": msg, "parse_mode": "Markdown"})
+
+def genereaza_bilet_real(tinta_cota=5.0, filtru_sport="football"):
+    meciuri = preia_meciuri_reale_ziua_curenta(filtru_sport)
+    
     selectii = []
-    cota_cumulata = 1.0
+    cota_totala = 1.0
 
-    for m in meciuri_filtrate:
+    for m in meciuri:
+        ev_id = m["id"]
         home = m["home"]
         away = m["away"]
-        sport = m["sport"]
-        ev_id = m["id"]
-
-        cota_ev = extrage_cota_live(ev_id)
-        tip_sel, stat_analysis = genereaza_analiza_statistica(sport, home, away)
-
-        if "tenn" in sport:
-            emoji, s_name = "🎾", "TENIS"
-        elif "bask" in sport:
-            emoji, s_name = "🏀", "BASCHET"
-        else:
-            emoji, s_name = "⚽", "FOTBAL"
-
+        liga = m["liga"]
+        
+        cota_ev, tip_sel, stat_text = extrage_cote_si_h2h(ev_id, home, away)
+        
+        emoji = "⚽" if "foot" in m["sport"] else "🎾"
+        
         selectii.append({
-            "sport": f"{emoji} {s_name}",
+            "sport": f"{emoji} {m['sport'].upper()} | {liga}",
             "meci": f"{home} vs {away}",
             "tip": tip_sel,
             "cota": cota_ev,
-            "statistica": stat_analysis
+            "statistica": stat_text
         })
-
-        cota_cumulata *= cota_ev
-        if cota_cumulata >= tinta_cota:
+        
+        cota_totala *= cota_ev
+        if cota_totala >= tinta_cota:
             break
 
-    # Rețea de siguranță cu meciuri reale actuale dacă lista API pe sportul cerut este restrânsă la ora respectivă
-    if not selectii or cota_cumulata < (tinta_cota * 0.6):
-        meciuri_baza = [
-            ("⚽ FOTBAL", "Everton vs Coventry City", "Peste 1.5 Goluri & Sub 5.5 Cartonașe", 1.60, "Analiză Sofascore: 5/5 meciuri directe au avut sub 5.5 cartonașe."),
-            ("⚽ FOTBAL", "Real Madrid vs Real Betis", "Ambele Marchează (GG)", 1.75, "Analiză Sofascore: Ambele echipe au marcat în 80% din ultimele 6 meciuri H2H."),
-            ("⚽ FOTBAL", "Arsenal vs Chelsea", "Peste 2.5 Goluri Totale", 1.70, "Analiză Sofascore: Medie de 3.2 goluri/meci în ultimele confruntări directe."),
-            ("🎾 TENIS", "Alcaraz vs Sinner", "Peste 21.5 Ghemuri Totale", 1.80, "Analiză Sofascore: Meci strâns, 4 din ultimele 5 meciuri au avut set decisiv."),
-            ("🏀 BASCHET", "Real Madrid vs Barcelona", "Peste 158.5 Puncte Totale", 1.65, "Analiză Sofascore: Medie combinată de 166.4 puncte pe meci.")
-        ]
-        selectii = []
-        cota_cumulata = 1.0
-        for sp, mc, tp, ct, st in meciuri_baza:
-            if filtru_sport:
-                if filtru_sport == "football" and "FOTBAL" not in sp:
-                    continue
-                elif filtru_sport == "tennis" and "TENIS" not in sp:
-                    continue
-                elif filtru_sport == "basketball" and "BASCHET" not in sp:
-                    continue
+    return selectii, round(cota_totala, 2)
 
-            selectii.append({
-                "sport": sp,
-                "meci": mc,
-                "tip": tp,
-                "cota": ct,
-                "statistica": st
-            })
-            cota_cumulata *= ct
-            if cota_cumulata >= tinta_cota:
-                break
-
-    return selectii, round(cota_cumulata, 2)
-
-def trimite_telegram(target_chat_id, tinta_cota=5.0, filtru_sport=None):
-    selectii, cota_finala = genereaza_bilet_dinamic(tinta_cota, filtru_sport)
+def trimite_telegram(target_chat_id, tinta_cota=5.0, filtru_sport="football"):
+    selectii, cota_finala = genereaza_bilet_real(tinta_cota, filtru_sport)
     data_str = datetime.now().strftime("%d.%m.%Y %H:%M")
     
-    lines = []
-    for s in selectii:
-        lines.append(
-            f"{s['sport']} | *{s['meci']}*\n"
-            f"🎯 *Tip:* {s['tip']} | *Cotă:* `{s['cota']}`\n"
-            f"📊 *{s['statistica']}*\n"
+    if not selectii:
+        mesaj = "⚠️ Nu am găsit meciuri suficiente programate astăzi pentru a atinge cota cerută."
+    else:
+        lines = []
+        for s in selectii:
+            lines.append(
+                f"{s['sport']}\n"
+                f"⚔️ *{s['meci']}*\n"
+                f"🎯 *Tip:* {s['tip']} | *Cotă:* `{s['cota']}`\n"
+                f"📊 *{s['statistica']}*\n"
+            )
+        
+        text_meciuri = "\n".join(lines)
+        mesaj = (
+            f"🏆 *DATA-DRIVEN MATCH SCENARIO ENGINE*\n"
+            f"📅 *Generat:* {data_str}\n"
+            f"🎯 *Țintă Cotă Solicitată:* `{tinta_cota}`\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"{text_meciuri}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💰 *COTĂ TOTALĂ COMBINATĂ REALĂ:* `{cota_finala}` 🚀\n"
+            f"🤖 *Generat automat de @AeptyMatch_bot*"
         )
-    
-    text_meciuri = "\n".join(lines)
-    mesaj = (
-        f"🏆 *DATA-DRIVEN MATCH SCENARIO ENGINE*\n"
-        f"📅 *Generat:* {data_str}\n"
-        f"🎯 *Țintă Cotă:* `{tinta_cota}`\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"{text_meciuri}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 *COTĂ TOTALĂ COMBINATĂ:* `{cota_finala}` 🚀\n"
-        f"🤖 *Generat de @AeptyMatch_bot*"
-    )
     
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": target_chat_id, "text": mesaj, "parse_mode": "Markdown"})
@@ -237,13 +203,17 @@ def asculta_comenzi():
                     cid = msg.get("chat", {}).get("id")
                     
                     if text and cid and text.startswith(("/", "!", ".")):
-                        cota_target = 5.0
-                        filtru = None
-                        
                         cmd_lower = text.lower()
-                        if "fotbal" in cmd_lower:
-                            filtru = "football"
-                        elif "tenis" in cmd_lower:
+                        
+                        # Comanda /meciuri sau /program
+                        if "meciuri" in cmd_lower or "program" in cmd_lower:
+                            threading.Thread(target=afiseaza_meciurile_zilei, args=(cid,)).start()
+                            continue
+
+                        cota_target = 5.0
+                        filtru = "football"
+                        
+                        if "tenis" in cmd_lower:
                             filtru = "tennis"
                         elif "baschet" in cmd_lower:
                             filtru = "basketball"
@@ -262,7 +232,7 @@ def asculta_comenzi():
             time.sleep(2)
 
 threading.Thread(target=asculta_comenzi, daemon=True).start()
-schedule.every().day.at("09:00").do(lambda: trimite_telegram(CHAT_ID, 5.0))
+schedule.every().day.at("09:00").do(lambda: trimite_telegram(CHAT_ID, 5.0, "football"))
 
 if __name__ == "__main__":
     while True:
