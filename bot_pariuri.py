@@ -40,7 +40,7 @@ def elimina_diacritice(text):
     return only_ascii.strip()
 
 def cerere_proxy_rezidential(target_url):
-    """Trimite cererea prin ScraperAPI cu Header Forwarding."""
+    """Trimite cererea prin ScraperAPI cu Headere Sofascore complete."""
     payload = {
         'api_key': SCRAPER_API_KEY,
         'url': target_url,
@@ -48,76 +48,13 @@ def cerere_proxy_rezidential(target_url):
     }
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*"
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://www.sofascore.com/",
+        "Origin": "https://www.sofascore.com"
     }
     return requests.get('http://api.scraperapi.com', params=payload, headers=headers, timeout=25)
 
 # --- 3. CĂUTARE INTELIGENTĂ ȘI EXTRASE SOFASCORE ---
-def cauta_echipa_sofascore(nume_echipa):
-    """Caută echipa pe Sofascore cu URL encoding și fallback-uri multiple."""
-    nume_clean = elimina_diacritice(nume_echipa)
-    q_encoded = urllib.parse.quote(nume_clean)
-    
-    # 1. Căutare prin API-ul global Sofascore
-    target_url = f"https://api.sofascore.com/api/v1/search/all?q={q_encoded}"
-    try:
-        r = cerere_proxy_rezidential(target_url)
-        if r.status_code == 200:
-            results = r.json().get("results", [])
-            for res in results:
-                if res.get("type") == "team":
-                    entity = res.get("entity", {})
-                    sport = entity.get("sport", {}).get("name", "").lower()
-                    if "foot" in sport or sport == "fotbal":
-                        return entity.get("id"), entity.get("name"), None
-    except Exception as e:
-        print(f"[EROARE SEARCH ALL] {e}", flush=True)
-
-    # 2. Căutare prin API-ul dedicat de echipe
-    target_url_teams = f"https://api.sofascore.com/api/v1/search/teams?q={q_encoded}"
-    try:
-        r = cerere_proxy_rezidential(target_url_teams)
-        if r.status_code == 200:
-            teams = r.json().get("teams", [])
-            for t in teams:
-                sport = t.get("sport", {}).get("name", "").lower()
-                if "foot" in sport or sport == "fotbal":
-                    return t.get("id"), t.get("name"), None
-    except Exception as e:
-        print(f"[EROARE SEARCH TEAMS] {e}", flush=True)
-
-    # 3. Fallback: Verificare în meciurile programate astăzi
-    meciuri_azi, _ = preia_meciuri_azi_sofascore()
-    if meciuri_azi:
-        nume_low = nume_clean.lower()
-        for m in meciuri_azi:
-            h_clean = elimina_diacritice(m["home"]).lower()
-            a_clean = elimina_diacritice(m["away"]).lower()
-            if nume_low in h_clean or nume_low in a_clean:
-                return f"MATCH_{m['id']}", f"{m['home']} vs {m['away']}", m
-
-    return None, None, None
-
-def preia_urmatorul_meci_echipa(team_id):
-    """Preluare meci viitor pentru echipa identificată prin ID."""
-    target_url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/next/0"
-    try:
-        r = cerere_proxy_rezidential(target_url)
-        if r.status_code == 200:
-            events = r.json().get("events", [])
-            if events:
-                ev = events[0]
-                return {
-                    "id": ev.get("id"),
-                    "home": ev.get("homeTeam", {}).get("name"),
-                    "away": ev.get("awayTeam", {}).get("name"),
-                    "liga": f"{ev.get('tournament', {}).get('category', {}).get('name', '')} - {ev.get('tournament', {}).get('name', '')}".strip(" - "),
-                    "start_timestamp": ev.get("startTimestamp")
-                }
-    except Exception as e:
-        print(f"[EROARE NEXT MATCH] {e}", flush=True)
-    return None
-
 def preia_meciuri_azi_sofascore():
     """Descărcare meciuri oficiale de astăzi din Sofascore."""
     data_azi = datetime.now().strftime("%Y-%m-%d")
@@ -127,27 +64,104 @@ def preia_meciuri_azi_sofascore():
     try:
         r = cerere_proxy_rezidential(target_url)
         if r.status_code == 200:
-            events = r.json().get("events", [])
-            for ev in events:
-                home = ev.get("homeTeam", {}).get("name")
-                away = ev.get("awayTeam", {}).get("name")
-                ev_id = ev.get("id")
-                tourn = ev.get("tournament", {}).get("name", "Fotbal")
-                cat = ev.get("tournament", {}).get("category", {}).get("name", "")
-                status = ev.get("status", {}).get("type", "")
-                
-                if home and away and ev_id and status not in ["finished", "canceled"]:
-                    meciuri.append({
-                        "id": ev_id,
-                        "home": home,
-                        "away": away,
-                        "liga": f"{cat} - {tourn}".strip(" - ")
-                    })
-            return meciuri, None
+            try:
+                events = r.json().get("events", [])
+                for ev in events:
+                    home = ev.get("homeTeam", {}).get("name")
+                    away = ev.get("awayTeam", {}).get("name")
+                    ev_id = ev.get("id")
+                    tourn = ev.get("tournament", {}).get("name", "Fotbal")
+                    cat = ev.get("tournament", {}).get("category", {}).get("name", "")
+                    status = ev.get("status", {}).get("type", "")
+                    
+                    if home and away and ev_id and status not in ["finished", "canceled"]:
+                        meciuri.append({
+                            "id": ev_id,
+                            "home": home,
+                            "away": away,
+                            "liga": f"{cat} - {tourn}".strip(" - ")
+                        })
+                return meciuri, None
+            except Exception as json_err:
+                return None, f"Eroare JSON meciuri azi: {json_err}"
         else:
             return None, f"HTTP {r.status_code} via ScraperAPI"
     except Exception as e:
         return None, str(e)
+
+def cauta_echipa_sofascore(nume_echipa):
+    """Caută echipa pe Sofascore cu URL encoding, protocoale sigure JSON și fallback-uri."""
+    nume_clean = elimina_diacritice(nume_echipa)
+    q_encoded = urllib.parse.quote(nume_clean)
+    
+    # 1. Căutare directă în meciurile zilei curente (cel mai rapid și sigur)
+    meciuri_azi, _ = preia_meciuri_azi_sofascore()
+    if meciuri_azi:
+        nume_low = nume_clean.lower()
+        for m in meciuri_azi:
+            h_clean = elimina_diacritice(m["home"]).lower()
+            a_clean = elimina_diacritice(m["away"]).lower()
+            if nume_low in h_clean or nume_low in a_clean:
+                return f"MATCH_{m['id']}", f"{m['home']} vs {m['away']}", m
+
+    # 2. Căutare prin API-ul global Sofascore cu protecție JSON
+    target_url = f"https://api.sofascore.com/api/v1/search/all?q={q_encoded}"
+    try:
+        r = cerere_proxy_rezidential(target_url)
+        if r.status_code == 200:
+            try:
+                results = r.json().get("results", [])
+                for res in results:
+                    if res.get("type") == "team":
+                        entity = res.get("entity", {})
+                        sport = entity.get("sport", {}).get("name", "").lower()
+                        if "foot" in sport or sport == "fotbal" or not sport:
+                            return entity.get("id"), entity.get("name"), None
+            except Exception as json_err:
+                print(f"[JSON ERR search/all] {json_err}", flush=True)
+    except Exception as e:
+        print(f"[EROARE SEARCH ALL] {e}", flush=True)
+
+    # 3. Căutare prin API-ul dedicat de echipe
+    target_url_teams = f"https://api.sofascore.com/api/v1/search/teams?q={q_encoded}"
+    try:
+        r = cerere_proxy_rezidential(target_url_teams)
+        if r.status_code == 200:
+            try:
+                teams = r.json().get("teams", [])
+                for t in teams:
+                    sport = t.get("sport", {}).get("name", "").lower()
+                    if "foot" in sport or sport == "fotbal" or not sport:
+                        return t.get("id"), t.get("name"), None
+            except Exception as json_err:
+                print(f"[JSON ERR search/teams] {json_err}", flush=True)
+    except Exception as e:
+        print(f"[EROARE SEARCH TEAMS] {e}", flush=True)
+
+    return None, None, None
+
+def preia_urmatorul_meci_echipa(team_id):
+    """Preluare meci viitor pentru echipa identificată prin ID."""
+    target_url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/next/0"
+    try:
+        r = cerere_proxy_rezidential(target_url)
+        if r.status_code == 200:
+            try:
+                events = r.json().get("events", [])
+                if events:
+                    ev = events[0]
+                    return {
+                        "id": ev.get("id"),
+                        "home": ev.get("homeTeam", {}).get("name"),
+                        "away": ev.get("awayTeam", {}).get("name"),
+                        "liga": f"{ev.get('tournament', {}).get('category', {}).get('name', '')} - {ev.get('tournament', {}).get('name', '')}".strip(" - "),
+                        "start_timestamp": ev.get("startTimestamp")
+                    }
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[EROARE NEXT MATCH] {e}", flush=True)
+    return None
 
 def extrage_statistici_detaliate_meci(ev_id):
     """Preluare tendințe statistice și caractere H2H de pe Sofascore."""
@@ -156,12 +170,15 @@ def extrage_statistici_detaliate_meci(ev_id):
     try:
         r = cerere_proxy_rezidential(target_url)
         if r.status_code == 200:
-            data = r.json()
-            for key in ["h2h", "home", "away"]:
-                for item in data.get(key, []):
-                    t, v = item.get("title"), item.get("value")
-                    if t and v:
-                        serii.append(f"{t}: {v}")
+            try:
+                data = r.json()
+                for key in ["h2h", "home", "away"]:
+                    for item in data.get(key, []):
+                        t, v = item.get("title"), item.get("value")
+                        if t and v:
+                            serii.append(f"{t}: {v}")
+            except Exception:
+                pass
     except Exception:
         pass
     return serii
