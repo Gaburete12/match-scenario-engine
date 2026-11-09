@@ -7,12 +7,12 @@ import schedule
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# --- 1. SERVER WEB PENTRU RENDER ---
+# --- 1. SERVER WEB PENTRU RENDER (Keep-Alive 24/7) ---
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot Engine Live & Operational 24/7")
+        self.wfile.write(b"Bot Engine Active & Operational 24/7")
 
     def log_message(self, format, *args):
         return
@@ -25,12 +25,12 @@ def start_server():
 threading.Thread(target=start_server, daemon=True).start()
 
 # --- 2. CREDENȚIALE TELEGRAM ȘI SCRAPERAPI ---
-TELEGRAM_TOKEN = "9174085773:AAHeVqRLK_R-xrbVzluI9nDi8e6zSKMRzR0"
+TELEGRAM_TOKEN = "9174085773:AAHeVqRLK_R-xrbVzlul9nDi8e6zSKMRzR0"
 CHAT_ID = "-5399153326"
 SCRAPER_API_KEY = "defdb63b16f8d842c9424882590151d2"
 
 def cerere_proxy_rezidential(target_url):
-    """Trimite cererea prin ScraperAPI."""
+    """Trimite cererea prin proxy-ul rezidențial ScraperAPI pentru a ocoli Cloudflare."""
     payload = {
         'api_key': SCRAPER_API_KEY,
         'url': target_url,
@@ -42,6 +42,7 @@ def cerere_proxy_rezidential(target_url):
     }
     return requests.get('http://api.scraperapi.com', params=payload, headers=headers, timeout=25)
 
+# --- 3. EXTRAGERE DINAMICĂ MEČIURI ȘI STATISTICI ---
 def preia_meciuri_azi_sofascore():
     data_azi = datetime.now().strftime("%Y-%m-%d")
     target_url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{data_azi}"
@@ -87,13 +88,14 @@ def extrage_statistici_detaliate_meci(ev_id):
         pass
     return serii
 
+# --- 4. FLUXURI TELEGRAM ---
 def proceseaza_analiza_echipa(target_chat_id, echipa_cautata=""):
     url_send = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     url_edit = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText"
 
     msg_wait = requests.post(url_send, json={
         "chat_id": target_chat_id,
-        "text": f"⏳ *Interoghez Sofascore via ScraperAPI...*\n\n_Vă rugăm așteptați preluarea datelor..._",
+        "text": f"⏳ *Interoghez Sofascore via ScraperAPI pentru `{echipa_cautata or 'ziua curentă'}`...*\n\n_Vă rugăm așteptați preluarea datelor..._",
         "parse_mode": "Markdown"
     }).json()
 
@@ -203,15 +205,17 @@ def proceseaza_si_trimite_bilet(target_chat_id, tinta_cota=5.0):
 
     requests.post(url_edit if msg_id else url_send, json={"chat_id": target_chat_id, "message_id": msg_id, "text": mesaj_final, "parse_mode": "Markdown"})
 
+# --- 5. ASCULTĂTOR COMENDI ---
 def asculta_comenzi():
     offset = 0
-    print("Ascultător comenzi Telegram pornit...")
+    print("Ascultător comenzi Telegram pornit...", flush=True)
     while True:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
             r = requests.get(url, params={"offset": offset, "timeout": 8}, timeout=12)
             if r.status_code == 200:
-                for u in r.json().get("result", []):
+                updates = r.json().get("result", [])
+                for u in updates:
                     offset = u["update_id"] + 1
                     msg = u.get("message", {})
                     text = msg.get("text", "").strip()
@@ -219,12 +223,12 @@ def asculta_comenzi():
 
                     if text and cid:
                         cmd_lower = text.lower()
-                        
-                        # Comandă de test rapid
+                        print(f"[COMANDĂ PRIMITĂ] Chat {cid}: {text}", flush=True)
+
                         if "/ping" in cmd_lower or "ping" in cmd_lower:
                             requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={
                                 "chat_id": cid,
-                                "text": "🏓 *PONG!* Botul este online și ascultă comenzile pe Render!",
+                                "text": "🏓 *PONG!* Botul este conectat cu noul token și funcționează!",
                                 "parse_mode": "Markdown"
                             })
                             continue
@@ -245,7 +249,11 @@ def asculta_comenzi():
 
                         if any(cmd in cmd_lower for cmd in ["bilet", "fotbal", "tenis", "baschet"]):
                             threading.Thread(target=proceseaza_si_trimite_bilet, args=(cid, cota_target)).start()
+            else:
+                print(f"[EROARE TELEGRAM] HTTP {r.status_code}: {r.text}", flush=True)
+                time.sleep(3)
         except Exception as e:
+            print(f"[EXCEPTIE TELEGRAM] {e}", flush=True)
             time.sleep(2)
 
 threading.Thread(target=asculta_comenzi, daemon=True).start()
