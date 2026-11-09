@@ -1,47 +1,18 @@
 import os
-import time
 import random
 import threading
 import requests
-import schedule
 import html
 import unicodedata
 from datetime import datetime, timedelta
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from flask import Flask, request, jsonify
 
-# --- 1. SERVER WEB PENTRU RENDER & AUTO KEEP-ALIVE ---
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot Match Scenario Engine Active")
+app = Flask(__name__)
 
-    def log_message(self, format, *args):
-        return
-
-def start_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    server.serve_forever()
-
-threading.Thread(target=start_server, daemon=True).start()
-
-def mentine_render_activ():
-    """Autoping intern la fiecare 4 minute pentru prevenirea stării de somn pe Render Free."""
-    url_render = "https://match-scenario-engine.onrender.com"
-    while True:
-        time.sleep(240)
-        try:
-            requests.get(url_render, timeout=10)
-        except Exception:
-            pass
-
-threading.Thread(target=mentine_render_activ, daemon=True).start()
-
-# --- 2. CREDENȚIALE TELEGRAM ȘI SCRAPERAPI ---
+# --- CREDENȚIALE TELEGRAM ȘI SCRAPERAPI ---
 TELEGRAM_TOKEN = "9174085773:AAHeVqRLK_R-xrbVzlul9nDi8e6zSKMRzR0"
-CHAT_ID = "-1003910030767"  # ID-ul actualizat al Supergrupului Telegram
 SCRAPER_API_KEY = "defdb63b16f8d842c9424882590151d2"
+RENDER_URL = "https://match-scenario-engine.onrender.com"
 
 def elimina_diacritice(text):
     if not text:
@@ -68,16 +39,11 @@ def trimite_sau_editeaza_mesaj(target_chat_id, text_html, msg_id=None):
             "parse_mode": "HTML"
         }
     try:
-        r = requests.post(url, json=payload, timeout=10)
-        if r.status_code != 200:
-            print(f"[EROARE TRIMIS MESAJ TELEGRAM] HTTP {r.status_code}: {r.text}", flush=True)
-        return r.json()
+        requests.post(url, json=payload, timeout=10)
     except Exception as e:
-        print(f"[EXCEPTIE TELEGRAM SEND] {e}", flush=True)
-        return {}
+        print(f"[EROARE TELEGRAM SEND] {e}", flush=True)
 
 def cerere_proxy_rezidential(target_url):
-    """Trimite cererea prin ScraperAPI cu Headere Sofascore complete."""
     payload = {
         'api_key': SCRAPER_API_KEY,
         'url': target_url,
@@ -89,37 +55,33 @@ def cerere_proxy_rezidential(target_url):
         "Referer": "https://www.sofascore.com/",
         "Origin": "https://www.sofascore.com"
     }
-    return requests.get('http://api.scraperapi.com', params=payload, headers=headers, timeout=20)
+    return requests.get('http://api.scraperapi.com', params=payload, headers=headers, timeout=15)
 
-# --- 3. EXTRAGERE MECIURI ȘI STATISTICI SOFASCORE ---
 def preia_meciuri_data(data_str):
     target_url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{data_str}"
     meciuri = []
     try:
         r = cerere_proxy_rezidential(target_url)
         if r.status_code == 200:
-            try:
-                events = r.json().get("events", [])
-                for ev in events:
-                    home = ev.get("homeTeam", {}).get("name")
-                    away = ev.get("awayTeam", {}).get("name")
-                    ev_id = ev.get("id")
-                    tourn = ev.get("tournament", {}).get("name", "Fotbal")
-                    cat = ev.get("tournament", {}).get("category", {}).get("name", "")
-                    status = ev.get("status", {}).get("type", "")
-                    start_ts = ev.get("startTimestamp")
-                    
-                    if home and away and ev_id and status not in ["finished", "canceled"]:
-                        meciuri.append({
-                            "id": ev_id,
-                            "home": home,
-                            "away": away,
-                            "liga": f"{cat} - {tourn}".strip(" - "),
-                            "start_ts": start_ts,
-                            "data_str": data_str
-                        })
-            except Exception:
-                pass
+            events = r.json().get("events", [])
+            for ev in events:
+                home = ev.get("homeTeam", {}).get("name")
+                away = ev.get("awayTeam", {}).get("name")
+                ev_id = ev.get("id")
+                tourn = ev.get("tournament", {}).get("name", "Fotbal")
+                cat = ev.get("tournament", {}).get("category", {}).get("name", "")
+                status = ev.get("status", {}).get("type", "")
+                start_ts = ev.get("startTimestamp")
+                
+                if home and away and ev_id and status not in ["finished", "canceled"]:
+                    meciuri.append({
+                        "id": ev_id,
+                        "home": home,
+                        "away": away,
+                        "liga": f"{cat} - {tourn}".strip(" - "),
+                        "start_ts": start_ts,
+                        "data_str": data_str
+                    })
     except Exception:
         pass
     return meciuri
@@ -144,35 +106,30 @@ def extrage_statistici_detaliate_meci(ev_id):
     try:
         r = cerere_proxy_rezidential(target_url)
         if r.status_code == 200:
-            try:
-                data = r.json()
-                for key in ["h2h", "home", "away"]:
-                    for item in data.get(key, []):
-                        t, v = item.get("title"), item.get("value")
-                        if t and v:
-                            serii.append(f"{t}: {v}")
-            except Exception:
-                pass
+            data = r.json()
+            for key in ["h2h", "home", "away"]:
+                for item in data.get(key, []):
+                    t, v = item.get("title"), item.get("value")
+                    if t and v:
+                        serii.append(f"{t}: {v}")
     except Exception:
         pass
     return serii
 
-# --- 4. FLUXURI TELEGRAM ASINCRONE ---
 def proceseaza_analiza_echipa(target_chat_id, echipa_cautata=""):
     target_name = echipa_cautata.strip() if echipa_cautata.strip() else "Dinamo Bucuresti"
 
     wait_text = f"⏳ <b>Caut meciul echipei <code>{html.escape(target_name)}</code> pe Sofascore...</b>\n<i>Extrag datele oficiale, confruntările directe și seriile de statistici...</i>"
-    msg_wait = trimite_sau_editeaza_mesaj(target_chat_id, wait_text)
-    msg_id = msg_wait.get("result", {}).get("message_id")
+    trimite_sau_editeaza_mesaj(target_chat_id, wait_text)
 
     meci = cauta_meci_echipa_multi_day(target_name)
 
     if not meci:
         err_msg = (
             f"⚠️ Nu am găsit niciun meci programat în următoarele 3 zile pentru echipa <b>{html.escape(target_name)}</b> pe Sofascore.\n\n"
-            f"💡 <b>Sfat:</b> Încearcă denumirea simplă a echipei (ex: <code>/analiza dinamo</code>, <code>/analiza fcsb</code>, <code>/analiza barcelona</code>)."
+            f"💡 <b>Sfat:</b> Încearcă denumirea simplă a echipei (ex: <code>/analiza dinamo</code>, <code>/analiza fcsb</code>)."
         )
-        trimite_sau_editeaza_mesaj(target_chat_id, err_msg, msg_id)
+        trimite_sau_editeaza_mesaj(target_chat_id, err_msg)
         return
 
     data_meci_str = meci["data_str"]
@@ -197,20 +154,18 @@ def proceseaza_analiza_echipa(target_chat_id, echipa_cautata=""):
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🤖 <i>Generat prin Multi-Day Engine &amp; ScraperAPI</i>"
     )
-
-    trimite_sau_editeaza_mesaj(target_chat_id, mesaj, msg_id)
+    trimite_sau_editeaza_mesaj(target_chat_id, mesaj)
 
 def proceseaza_si_trimite_bilet(target_chat_id, tinta_cota=5.0):
     wait_text = f"🔄 <b>Preluare meciuri live din Sofascore...</b>\n🎯 <b>Țintă cotă:</b> <code>{tinta_cota}</code>\n\n<i>Se analizează meciurile zilei...</i>"
-    msg_wait = trimite_sau_editeaza_mesaj(target_chat_id, wait_text)
-    msg_id = msg_wait.get("result", {}).get("message_id")
+    trimite_sau_editeaza_mesaj(target_chat_id, wait_text)
 
     data_azi = datetime.now().strftime("%Y-%m-%d")
     meciuri = preia_meciuri_data(data_azi)
     
     if not meciuri:
         err_msg = f"❌ <b>Eroare Preluare Date:</b> <code>Nu s-au găsit meciuri programate astăzi.</code>"
-        trimite_sau_editeaza_mesaj(target_chat_id, err_msg, msg_id)
+        trimite_sau_editeaza_mesaj(target_chat_id, err_msg)
         return
 
     random.shuffle(meciuri)
@@ -255,65 +210,47 @@ def proceseaza_si_trimite_bilet(target_chat_id, tinta_cota=5.0):
         f"💰 <b>COTĂ TOTALĂ COMBINATĂ REALĂ:</b> <code>{round(cota_acumulata, 2)}</code> 🚀\n"
         f"🤖 <i>Generat prin ScraperAPI Proxy Engine</i>"
     )
+    trimite_sau_editeaza_mesaj(target_chat_id, mesaj_final)
 
-    trimite_sau_editeaza_mesaj(target_chat_id, mesaj_final, msg_id)
+# --- FLASK ENDPOINTS ---
+@app.route("/", methods=["GET"])
+def health():
+    return "Bot Match Scenario Engine Webhook Active", 200
 
-# --- 5. ASCULTĂTOR COMENDI TELEGRAM ---
-def asculta_comenzi():
-    print("Ascultător comenzi Telegram pornit...", flush=True)
-    
-    try:
-        requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook", timeout=5)
-    except Exception:
-        pass
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    update = request.get_json(force=True, silent=True)
+    if not update:
+        return jsonify({"status": "ignored"}), 200
 
-    offset = 0
-    while True:
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-            r = requests.get(url, params={"offset": offset, "timeout": 8}, timeout=12)
-            if r.status_code == 200:
-                updates = r.json().get("result", [])
-                for u in updates:
-                    offset = u["update_id"] + 1
-                    msg = u.get("message", {})
-                    text = msg.get("text", "").strip()
-                    cid = msg.get("chat", {}).get("id")
+    msg = update.get("message", {})
+    text = msg.get("text", "").strip()
+    cid = msg.get("chat", {}).get("id")
 
-                    if text and cid:
-                        cmd_lower = text.lower()
-                        print(f"[COMANDĂ PRIMITĂ] Chat {cid}: {text}", flush=True)
+    if text and cid:
+        cmd_lower = text.lower()
+        print(f"[WEBHOOK RECEPTIOAT] Chat {cid}: {text}", flush=True)
 
-                        if "/ping" in cmd_lower or "ping" in cmd_lower:
-                            threading.Thread(target=lambda c=cid: trimite_sau_editeaza_mesaj(c, "🏓 <b>PONG!</b> Botul este online și funcționează perfect!")).start()
-                            continue
+        if "/ping" in cmd_lower or "ping" in cmd_lower:
+            threading.Thread(target=lambda: trimite_sau_editeaza_mesaj(cid, "🏓 <b>PONG!</b> Webhook activ & operativ 24/7 pe Render!")).start()
 
-                        if "analiza" in cmd_lower or "scenariu" in cmd_lower:
-                            nume = cmd_lower.replace("/analiza", "").replace("!", "").replace(".", "").strip()
-                            threading.Thread(target=proceseaza_analiza_echipa, args=(cid, nume)).start()
-                            continue
+        elif "analiza" in cmd_lower or "scenariu" in cmd_lower:
+            nume = cmd_lower.replace("/analiza", "").replace("!", "").replace(".", "").strip()
+            threading.Thread(target=proceseaza_analiza_echipa, args=(cid, nume)).start()
 
-                        cota_target = 5.0
-                        for part in text.split():
-                            try:
-                                val = float(part.replace(",", "."))
-                                if val > 1.0:
-                                    cota_target = val
-                            except ValueError:
-                                pass
+        elif any(cmd in cmd_lower for cmd in ["bilet", "fotbal", "tenis", "baschet"]):
+            cota_target = 5.0
+            for part in text.split():
+                try:
+                    val = float(part.replace(",", "."))
+                    if val > 1.0:
+                        cota_target = val
+                except ValueError:
+                    pass
+            threading.Thread(target=proceseaza_si_trimite_bilet, args=(cid, cota_target)).start()
 
-                        if any(cmd in cmd_lower for cmd in ["bilet", "fotbal", "tenis", "baschet"]):
-                            threading.Thread(target=proceseaza_si_trimite_bilet, args=(cid, cota_target)).start()
-            else:
-                time.sleep(2)
-        except Exception as e:
-            print(f"[EXCEPȚIE LOOP TELEGRAM] {e}", flush=True)
-            time.sleep(2)
-
-threading.Thread(target=asculta_comenzi, daemon=True).start()
-schedule.every().day.at("09:00").do(lambda: proceseaza_si_trimite_bilet(CHAT_ID, 5.0))
+    return jsonify({"status": "ok"}), 200
 
 if __name__ == "__main__":
-    while True:
-        schedule.run_pending()
-        time.sleep(30)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
