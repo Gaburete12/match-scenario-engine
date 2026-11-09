@@ -25,7 +25,7 @@ def start_server():
 threading.Thread(target=start_server, daemon=True).start()
 
 # --- 2. CREDENȚIALE TELEGRAM ȘI SCRAPERAPI ---
-TELEGRAM_TOKEN = "9174085773:AAHeVqRLK_R-xrbVzlul9nDi8e6zSKMRzR0"
+TELEGRAM_TOKEN = "9174085773:AAHeVqRLK_R-xrbVzluI9nDi8e6zSKMRzR0"
 CHAT_ID = "-5399153326"
 SCRAPER_API_KEY = "defdb63b16f8d842c9424882590151d2"
 
