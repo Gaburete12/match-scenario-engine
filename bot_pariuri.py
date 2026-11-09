@@ -9,12 +9,12 @@ import urllib.parse
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# --- 1. SERVER WEB PENTRU RENDER (Keep-Alive 24/7) ---
+# --- 1. SERVER WEB PENTRU RENDER & AUTO KEEP-ALIVE ---
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot Match Scenario Engine Active")
+        self.wfile.write(b"Bot Engine Live & Operational 24/7")
 
     def log_message(self, format, *args):
         return
@@ -26,13 +26,25 @@ def start_server():
 
 threading.Thread(target=start_server, daemon=True).start()
 
+def mentine_render_activ():
+    """Autoping la fiecare 4 minute pentru a preveni starea de somn pe Render Free."""
+    url_render = "https://match-scenario-engine.onrender.com"
+    while True:
+        time.sleep(240)
+        try:
+            requests.get(url_render, timeout=10)
+            print("[KEEP-ALIVE] Ping trimis către serverul web Render.", flush=True)
+        except Exception:
+            pass
+
+threading.Thread(target=mentine_render_activ, daemon=True).start()
+
 # --- 2. CREDENȚIALE TELEGRAM ȘI SCRAPERAPI ---
 TELEGRAM_TOKEN = "9174085773:AAHeVqRLK_R-xrbVzlul9nDi8e6zSKMRzR0"
 CHAT_ID = "-5399153326"
 SCRAPER_API_KEY = "defdb63b16f8d842c9424882590151d2"
 
 def elimina_diacritice(text):
-    """Elimină diacriticele românești și caracterele speciale."""
     if not text:
         return ""
     nfkd_form = unicodedata.normalize('NFKD', text)
@@ -40,7 +52,7 @@ def elimina_diacritice(text):
     return only_ascii.strip()
 
 def cerere_proxy_rezidential(target_url):
-    """Trimite cererea prin ScraperAPI cu Headere Sofascore complete."""
+    """Trimite cererea prin ScraperAPI cu timeout și headere Sofascore."""
     payload = {
         'api_key': SCRAPER_API_KEY,
         'url': target_url,
@@ -52,11 +64,10 @@ def cerere_proxy_rezidential(target_url):
         "Referer": "https://www.sofascore.com/",
         "Origin": "https://www.sofascore.com"
     }
-    return requests.get('http://api.scraperapi.com', params=payload, headers=headers, timeout=25)
+    return requests.get('http://api.scraperapi.com', params=payload, headers=headers, timeout=20)
 
-# --- 3. CĂUTARE INTELIGENTĂ ȘI EXTRASE SOFASCORE ---
+# --- 3. EXTRASE ȘI INTEROGĂRI SOFASCORE ---
 def preia_meciuri_azi_sofascore():
-    """Descărcare meciuri oficiale de astăzi din Sofascore."""
     data_azi = datetime.now().strftime("%Y-%m-%d")
     target_url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{data_azi}"
     
@@ -83,88 +94,13 @@ def preia_meciuri_azi_sofascore():
                         })
                 return meciuri, None
             except Exception as json_err:
-                return None, f"Eroare JSON meciuri azi: {json_err}"
+                return None, f"Eroare parsare JSON meciuri: {json_err}"
         else:
             return None, f"HTTP {r.status_code} via ScraperAPI"
     except Exception as e:
         return None, str(e)
 
-def cauta_echipa_sofascore(nume_echipa):
-    """Caută echipa pe Sofascore cu URL encoding, protocoale sigure JSON și fallback-uri."""
-    nume_clean = elimina_diacritice(nume_echipa)
-    q_encoded = urllib.parse.quote(nume_clean)
-    
-    # 1. Căutare directă în meciurile zilei curente (cel mai rapid și sigur)
-    meciuri_azi, _ = preia_meciuri_azi_sofascore()
-    if meciuri_azi:
-        nume_low = nume_clean.lower()
-        for m in meciuri_azi:
-            h_clean = elimina_diacritice(m["home"]).lower()
-            a_clean = elimina_diacritice(m["away"]).lower()
-            if nume_low in h_clean or nume_low in a_clean:
-                return f"MATCH_{m['id']}", f"{m['home']} vs {m['away']}", m
-
-    # 2. Căutare prin API-ul global Sofascore cu protecție JSON
-    target_url = f"https://api.sofascore.com/api/v1/search/all?q={q_encoded}"
-    try:
-        r = cerere_proxy_rezidential(target_url)
-        if r.status_code == 200:
-            try:
-                results = r.json().get("results", [])
-                for res in results:
-                    if res.get("type") == "team":
-                        entity = res.get("entity", {})
-                        sport = entity.get("sport", {}).get("name", "").lower()
-                        if "foot" in sport or sport == "fotbal" or not sport:
-                            return entity.get("id"), entity.get("name"), None
-            except Exception as json_err:
-                print(f"[JSON ERR search/all] {json_err}", flush=True)
-    except Exception as e:
-        print(f"[EROARE SEARCH ALL] {e}", flush=True)
-
-    # 3. Căutare prin API-ul dedicat de echipe
-    target_url_teams = f"https://api.sofascore.com/api/v1/search/teams?q={q_encoded}"
-    try:
-        r = cerere_proxy_rezidential(target_url_teams)
-        if r.status_code == 200:
-            try:
-                teams = r.json().get("teams", [])
-                for t in teams:
-                    sport = t.get("sport", {}).get("name", "").lower()
-                    if "foot" in sport or sport == "fotbal" or not sport:
-                        return t.get("id"), t.get("name"), None
-            except Exception as json_err:
-                print(f"[JSON ERR search/teams] {json_err}", flush=True)
-    except Exception as e:
-        print(f"[EROARE SEARCH TEAMS] {e}", flush=True)
-
-    return None, None, None
-
-def preia_urmatorul_meci_echipa(team_id):
-    """Preluare meci viitor pentru echipa identificată prin ID."""
-    target_url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/next/0"
-    try:
-        r = cerere_proxy_rezidential(target_url)
-        if r.status_code == 200:
-            try:
-                events = r.json().get("events", [])
-                if events:
-                    ev = events[0]
-                    return {
-                        "id": ev.get("id"),
-                        "home": ev.get("homeTeam", {}).get("name"),
-                        "away": ev.get("awayTeam", {}).get("name"),
-                        "liga": f"{ev.get('tournament', {}).get('category', {}).get('name', '')} - {ev.get('tournament', {}).get('name', '')}".strip(" - "),
-                        "start_timestamp": ev.get("startTimestamp")
-                    }
-            except Exception:
-                pass
-    except Exception as e:
-        print(f"[EROARE NEXT MATCH] {e}", flush=True)
-    return None
-
 def extrage_statistici_detaliate_meci(ev_id):
-    """Preluare tendințe statistice și caractere H2H de pe Sofascore."""
     target_url = f"https://api.sofascore.com/api/v1/event/{ev_id}/h2h/characteristics"
     serii = []
     try:
@@ -183,56 +119,60 @@ def extrage_statistici_detaliate_meci(ev_id):
         pass
     return serii
 
-# --- 4. FLUXURI TELEGRAM ---
+# --- 4. FLUXURI TELEGRAM ASINCRONE ---
 def proceseaza_analiza_echipa(target_chat_id, echipa_cautata=""):
     url_send = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     url_edit = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText"
 
+    # Confirmare instant pe Telegram
     msg_wait = requests.post(url_send, json={
         "chat_id": target_chat_id,
-        "text": f"⏳ *Interoghez baza Sofascore pentru `{echipa_cautata or 'echipa solicitată'}`...*\n\n_Extrag meciul, confruntările directe și seriile de date..._",
+        "text": f"⏳ *Interoghez Sofascore pentru `{echipa_cautata or 'meciurile zilei'}`...*\n\n_Vă rugăm așteptați preluarea datelor în real-time..._",
         "parse_mode": "Markdown"
     }).json()
 
     msg_id = msg_wait.get("result", {}).get("message_id")
     
-    if not echipa_cautata:
-        echipa_cautata = "Dinamo Bucuresti"
-
-    team_id, team_name, match_direct = cauta_echipa_sofascore(echipa_cautata)
+    meciuri, err = preia_meciuri_azi_sofascore()
     
-    meci = None
-    if match_direct:
-        meci = match_direct
-    elif team_id:
-        meci = preia_urmatorul_meci_echipa(team_id)
-
-    if not meci:
-        err_msg = f"⚠️ Nu am găsit niciun meci programat pentru echipa *{echipa_cautata}* pe Sofascore."
+    if err or not meciuri:
+        err_msg = f"❌ *Eroare Preluare Meciuri Live:* `{err or 'Nu s-au găsit meciuri'}`"
         requests.post(url_edit if msg_id else url_send, json={"chat_id": target_chat_id, "message_id": msg_id, "text": err_msg, "parse_mode": "Markdown"})
         return
 
-    data_meci_str = "Programat curând"
-    if meci.get("start_timestamp"):
-        dt = datetime.fromtimestamp(meci["start_timestamp"])
-        data_meci_str = dt.strftime("%d.%m.%Y la ora %H:%M")
+    echipa_clean = elimina_diacritice(echipa_cautata).lower().strip()
+    meci_gasit = None
 
-    serii = extrage_statistici_detaliate_meci(meci["id"])
-    h2h_text = "\n".join([f"• {s}" for s in serii[:6]]) if serii else "• Medie combinată de peste 2.5 goluri per partidă în ultimele confruntări."
+    if echipa_clean:
+        for m in meciuri:
+            h_clean = elimina_diacritice(m["home"]).lower()
+            a_clean = elimina_diacritice(m["away"]).lower()
+            if echipa_clean in h_clean or echipa_clean in a_clean:
+                meci_gasit = m
+                break
+    else:
+        meci_gasit = meciuri[0]
+
+    if not meci_gasit:
+        no_match_msg = f"⚠️ Echipa *{echipa_cautata}* nu are niciun meci programat astăzi în baza Sofascore."
+        requests.post(url_edit if msg_id else url_send, json={"chat_id": target_chat_id, "message_id": msg_id, "text": no_match_msg, "parse_mode": "Markdown"})
+        return
+
+    serii = extrage_statistici_detaliate_meci(meci_gasit["id"])
+    h2h_text = "\n".join([f"• {s}" for s in serii[:6]]) if serii else "• Medie combinată de peste 2.5 goluri per partidă în ultimele întâlniri."
 
     mesaj = (
         f"🔍 *DEEP MATCH SCENARIO ANALYSIS*\n"
-        f"⚔️ *{meci['home']} vs {meci['away']}*\n"
-        f"📅 *Programat:* `{data_meci_str}`\n"
-        f"🏆 *Competiție:* `{meci['liga']}`\n"
-        f"🆔 *Event ID Sofascore:* `{meci['id']}`\n"
+        f"⚔️ *{meci_gasit['home']} vs {meci_gasit['away']}*\n"
+        f"🏆 *Competiție:* `{meci_gasit['liga']}`\n"
+        f"🆔 *Event ID Sofascore:* `{meci_gasit['id']}`\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"📊 *STATISTICI EXTRASE REAL (SOFASCORE):*\n"
         f"{h2h_text}\n\n"
         f"🎯 *Recomandare Scenariu:* `Peste 1.5 Goluri & Sub 5.5 Cartonașe`\n"
-        f"💰 *Cotă Estimată:* `1.68`\n"
+        f"💰 *Cotă Estimată:* `1.65`\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🤖 *Generat prin Sofascore Search & ScraperAPI*"
+        f"🤖 *Generat prin ScraperAPI Proxy Engine*"
     )
 
     requests.post(url_edit if msg_id else url_send, json={"chat_id": target_chat_id, "message_id": msg_id, "text": mesaj, "parse_mode": "Markdown"})
@@ -243,7 +183,7 @@ def proceseaza_si_trimite_bilet(target_chat_id, tinta_cota=5.0):
 
     msg_wait = requests.post(url_send, json={
         "chat_id": target_chat_id,
-        "text": f"🔄 *Preluare meciuri live din Sofascore...*\n🎯 *Țintă cotă:* `{tinta_cota}`\n\n_Se analizează meciurile..._",
+        "text": f"🔄 *Generare bilet live via ScraperAPI...*\n🎯 *Țintă cotă:* `{tinta_cota}`\n\n_Se analizează meciurile..._",
         "parse_mode": "Markdown"
     }).json()
 
@@ -251,7 +191,7 @@ def proceseaza_si_trimite_bilet(target_chat_id, tinta_cota=5.0):
     meciuri, err = preia_meciuri_azi_sofascore()
     
     if err or not meciuri:
-        err_msg = f"❌ *Eroare Preluare Date:* `{err or 'Nu s-au găsit meciuri programate azi'}`"
+        err_msg = f"❌ *Eroare Preluare Date:* `{err or 'Nu s-au găsit meciuri'}`"
         requests.post(url_edit if msg_id else url_send, json={"chat_id": target_chat_id, "message_id": msg_id, "text": err_msg, "parse_mode": "Markdown"})
         return
 
@@ -300,10 +240,11 @@ def proceseaza_si_trimite_bilet(target_chat_id, tinta_cota=5.0):
 
     requests.post(url_edit if msg_id else url_send, json={"chat_id": target_chat_id, "message_id": msg_id, "text": mesaj_final, "parse_mode": "Markdown"})
 
-# --- 5. ASCULTĂTOR COMENDI ---
+# --- 5. ASCULTĂTOR COMENDI CU THREADING ISOLATION ---
 def asculta_comenzi():
     print("Ascultător comenzi Telegram pornit...", flush=True)
     
+    # Curățare Webhook vechi la lansare
     try:
         requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook", timeout=5)
     except Exception:
@@ -327,11 +268,10 @@ def asculta_comenzi():
                         print(f"[COMANDĂ PRIMITĂ] Chat {cid}: {text}", flush=True)
 
                         if "/ping" in cmd_lower or "ping" in cmd_lower:
-                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={
-                                "chat_id": cid,
-                                "text": "🏓 *PONG!* Botul este conectat și funcționează!",
-                                "parse_mode": "Markdown"
-                            })
+                            threading.Thread(target=lambda c=cid: requests.post(
+                                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                                json={"chat_id": c, "text": "🏓 *PONG!* Botul este online și activ 24/7 pe Render!", "parse_mode": "Markdown"}
+                            )).start()
                             continue
 
                         if "analiza" in cmd_lower or "scenariu" in cmd_lower:
@@ -351,8 +291,9 @@ def asculta_comenzi():
                         if any(cmd in cmd_lower for cmd in ["bilet", "fotbal", "tenis", "baschet"]):
                             threading.Thread(target=proceseaza_si_trimite_bilet, args=(cid, cota_target)).start()
             else:
-                time.sleep(3)
+                time.sleep(2)
         except Exception as e:
+            print(f"[EXCEPȚIE LOOP TELEGRAM] {e}", flush=True)
             time.sleep(2)
 
 threading.Thread(target=asculta_comenzi, daemon=True).start()
