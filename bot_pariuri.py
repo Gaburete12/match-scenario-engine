@@ -7,12 +7,12 @@ import schedule
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# --- 1. SERVER WEB PENTRU RENDER (Keep-Alive 24/7) ---
+# --- 1. SERVER WEB PENTRU RENDER & SELF-KEEP-ALIVE ---
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"ScraperAPI Proxy Engine Online 24/7")
+        self.wfile.write(b"ScraperAPI Engine Live & Active")
 
     def log_message(self, format, *args):
         return
@@ -24,22 +24,39 @@ def start_server():
 
 threading.Thread(target=start_server, daemon=True).start()
 
+def mentine_serverul_treaz():
+    """Autoping la fiecare 10 minute pentru a preveni modul de somn pe Render."""
+    url_render = "https://match-scenario-engine.onrender.com"
+    while True:
+        time.sleep(600)
+        try:
+            requests.get(url_render, timeout=5)
+        except Exception:
+            pass
+
+threading.Thread(target=mentine_serverul_treaz, daemon=True).start()
+
 # --- 2. CREDENȚIALE TELEGRAM ȘI SCRAPERAPI ---
 TELEGRAM_TOKEN = "9174085773:AAHeVqRLK_R-xrbVzluI9nDi8e6zSKMRzR0"
 CHAT_ID = "-5399153326"
 SCRAPER_API_KEY = "defdb63b16f8d842c9424882590151d2"
 
 def cerere_proxy_rezidential(target_url):
-    """Trimite cererea prin proxy-ul rezidențial ScraperAPI pentru a ocoli Cloudflare (HTTP 403)."""
+    """Trimite cerere prin ScraperAPI cu Header Forwarding activat."""
     payload = {
         'api_key': SCRAPER_API_KEY,
-        'url': target_url
+        'url': target_url,
+        'keep_headers': 'true'
     }
-    return requests.get('http://api.scraperapi.com', params=payload, timeout=25)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*"
+    }
+    return requests.get('http://api.scraperapi.com', params=payload, headers=headers, timeout=30)
 
-# --- 3. EXTRAGERE DINAMICĂ DE MECIURI ȘI STATISTICI ---
+# --- 3. EXTRAGERE DINAMICĂ MEČIURI ȘI STATISTICI ---
 def preia_meciuri_azi_sofascore():
-    """Extrage meciurile programate astăzi din Sofascore trecând de filtrul Cloudflare."""
+    """Descărcare meciuri oficiale de pe Sofascore via ScraperAPI."""
     data_azi = datetime.now().strftime("%Y-%m-%d")
     target_url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{data_azi}"
     
@@ -65,12 +82,12 @@ def preia_meciuri_azi_sofascore():
                     })
             return meciuri, None
         else:
-            return None, f"HTTP Error {r.status_code} via ScraperAPI"
+            return None, f"HTTP {r.status_code} via ScraperAPI"
     except Exception as e:
         return None, str(e)
 
 def extrage_statistici_detaliate_meci(ev_id):
-    """Extrage seriile statistice H2H de pe Sofascore pentru meciul specificat."""
+    """Preluare tendințe H2H de pe Sofascore."""
     target_url = f"https://api.sofascore.com/api/v1/event/{ev_id}/h2h/characteristics"
     serii = []
     try:
@@ -85,14 +102,29 @@ def extrage_statistici_detaliate_meci(ev_id):
         pass
     return serii
 
-# --- 4. FLUXURI TELEGRAM ---
+# --- 4. FLUXURI TELEGRAM CU FEEDBACK IMEDIAT ---
 def proceseaza_analiza_echipa(target_chat_id, echipa_cautata=""):
+    url_send = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    url_edit = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText"
+
+    # Confirmare vizuală instant pe Telegram
+    msg_wait = requests.post(url_send, json={
+        "chat_id": target_chat_id,
+        "text": f"⏳ *Caut meciul pentru `{echipa_cautata or 'ziua curentă'}` pe Sofascore via ScraperAPI...*\n\n_Vă rugăm așteptați extragerea datelor real-time..._",
+        "parse_mode": "Markdown"
+    }).json()
+
+    msg_id = msg_wait.get("result", {}).get("message_id")
     echipa_clean = echipa_cautata.lower().strip()
+    
     meciuri, err = preia_meciuri_azi_sofascore()
     
     if err or not meciuri:
-        msg = f"❌ *Eroare Preluare Meciuri Live:* `{err or 'Nu s-au găsit meciuri'}`"
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": target_chat_id, "text": msg, "parse_mode": "Markdown"})
+        err_msg = f"❌ *Eroare Preluare Meciuri Live:* `{err or 'Nu s-au găsit meciuri'}`"
+        if msg_id:
+            requests.post(url_edit, json={"chat_id": target_chat_id, "message_id": msg_id, "text": err_msg, "parse_mode": "Markdown"})
+        else:
+            requests.post(url_send, json={"chat_id": target_chat_id, "text": err_msg, "parse_mode": "Markdown"})
         return
 
     meci_gasit = None
@@ -105,8 +137,11 @@ def proceseaza_analiza_echipa(target_chat_id, echipa_cautata=""):
         meci_gasit = meciuri[0]
 
     if not meci_gasit:
-        msg = f"⚠️ Echipa *{echipa_cautata}* nu are niciun meci programat astăzi în baza Sofascore."
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": target_chat_id, "text": msg, "parse_mode": "Markdown"})
+        no_match_msg = f"⚠️ Echipa *{echipa_cautata}* nu are niciun meci programat astăzi în baza Sofascore."
+        if msg_id:
+            requests.post(url_edit, json={"chat_id": target_chat_id, "message_id": msg_id, "text": no_match_msg, "parse_mode": "Markdown"})
+        else:
+            requests.post(url_send, json={"chat_id": target_chat_id, "text": no_match_msg, "parse_mode": "Markdown"})
         return
 
     serii = extrage_statistici_detaliate_meci(meci_gasit["id"])
@@ -116,7 +151,7 @@ def proceseaza_analiza_echipa(target_chat_id, echipa_cautata=""):
         f"🔍 *ANALIZĂ AUTOMATĂ DEEP MATCH SCENARIO*\n"
         f"⚔️ *{meci_gasit['home']} vs {meci_gasit['away']}*\n"
         f"🏆 *Competiție:* `{meci_gasit['liga']}`\n"
-        f"🆔 *Event ID:* `{meci_gasit['id']}`\n"
+        f"🆔 *Event ID Sofascore:* `{meci_gasit['id']}`\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"📊 *STATISTICI & TENDINȚE EXTRASE REAL (SOFASCORE):*\n"
         f"{h2h_text}\n\n"
@@ -125,7 +160,11 @@ def proceseaza_analiza_echipa(target_chat_id, echipa_cautata=""):
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🤖 *Generat automat prin ScraperAPI Proxy Engine*"
     )
-    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": target_chat_id, "text": mesaj, "parse_mode": "Markdown"})
+
+    if msg_id:
+        requests.post(url_edit, json={"chat_id": target_chat_id, "message_id": msg_id, "text": mesaj, "parse_mode": "Markdown"})
+    else:
+        requests.post(url_send, json={"chat_id": target_chat_id, "text": mesaj, "parse_mode": "Markdown"})
 
 def proceseaza_si_trimite_bilet(target_chat_id, tinta_cota=5.0):
     url_send = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
