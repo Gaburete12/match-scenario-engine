@@ -42,7 +42,7 @@ def cerere_proxy_rezidential(target_url):
     }
     return requests.get('http://api.scraperapi.com', params=payload, headers=headers, timeout=25)
 
-# --- 3. EXTRAGERE DINAMICĂ MEČIURI ȘI STATISTICI ---
+# --- 3. EXTRAGERE DINAMICĂ MECIURI ȘI STATISTICI ---
 def preia_meciuri_azi_sofascore():
     data_azi = datetime.now().strftime("%Y-%m-%d")
     target_url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{data_azi}"
@@ -207,8 +207,16 @@ def proceseaza_si_trimite_bilet(target_chat_id, tinta_cota=5.0):
 
 # --- 5. ASCULTĂTOR COMENDI ---
 def asculta_comenzi():
-    offset = 0
     print("Ascultător comenzi Telegram pornit...", flush=True)
+    
+    # Ștergere automată Webhook la fiecare lansare pentru prevenirea erorii HTTP 409
+    try:
+        requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook", timeout=5)
+        print("[SETUP TELEGRAM] Webhook vechi șters cu succes.", flush=True)
+    except Exception as e:
+        print(f"[SETUP TELEGRAM] Eroare la ștergerea webhook-ului: {e}", flush=True)
+
+    offset = 0
     while True:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
@@ -228,7 +236,7 @@ def asculta_comenzi():
                         if "/ping" in cmd_lower or "ping" in cmd_lower:
                             requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={
                                 "chat_id": cid,
-                                "text": "🏓 *PONG!* Botul este conectat cu noul token și funcționează!",
+                                "text": "🏓 *PONG!* Botul este conectat și funcționează!",
                                 "parse_mode": "Markdown"
                             })
                             continue
