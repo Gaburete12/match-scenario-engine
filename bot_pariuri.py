@@ -10,7 +10,7 @@ from flask import Flask, request, jsonify
 app = Flask(__name__)
 
 # --- CREDENȚIALE TELEGRAM ȘI SCRAPERAPI ---
-TELEGRAM_TOKEN = "9174085773:AAHeVqRLK_R-xrbVzlul9nDi8e6zSKMRzR0"
+TELEGRAM_TOKEN = "9174085773:AAHeVqRLK_R-xrbVzluI9nDi8e6zSKMRzR0"
 SCRAPER_API_KEY = "defdb63b16f8d842c9424882590151d2"
 
 def elimina_diacritice(text):
@@ -29,8 +29,7 @@ def trimite_mesaj_telegram(target_chat_id, text_html):
         "parse_mode": "HTML"
     }
     try:
-        r = requests.post(url, json=payload, timeout=10)
-        print(f"[TELEGRAM SEND] Status: {r.status_code} | Response: {r.text}", flush=True)
+        requests.post(url, json=payload, timeout=10)
     except Exception as e:
         print(f"[EROARE TELEGRAM SEND] {e}", flush=True)
 
@@ -75,12 +74,11 @@ def preia_meciuri_data(data_str):
                     })
     except Exception as e:
         print(f"[EROARE PRELUARE MECIURI] {e}", flush=True)
-    return meciuri
+    return mrei if 'mrei' in locals() else meciuri
 
 def proceseaza_analiza_echipa(target_chat_id, echipa_cautata=""):
     target_name = echipa_cautata.strip() if echipa_cautata.strip() else "Dinamo Bucuresti"
     
-    # Trimitem imediat notificare de căutare
     trimite_mesaj_telegram(target_chat_id, f"⏳ <b>Caut meciul echipei <code>{html.escape(target_name)}</code> pe Sofascore...</b>")
 
     nume_clean = elimina_diacritice(target_name).lower().strip()
@@ -100,7 +98,6 @@ def proceseaza_analiza_echipa(target_chat_id, echipa_cautata=""):
             break
 
     if not meci_gasit:
-        # Dacă nu găsește prin scraper, trimite un răspuns informativ garantat
         mesaj_fallback = (
             f"🔍 <b>ANALIZĂ SCENARIU: {html.escape(target_name.upper())}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -141,7 +138,6 @@ def proceseaza_si_trimite_bilet(target_chat_id, tinta_cota=5.0):
     meciuri = preia_meciuri_data(data_azi)
     
     if not meciuri:
-        # Fallback de siguranță cu selecții standard dacă scraperul nu returnează meciuri în secundas
         mesaj_bilet = (
             f"🏆 <b>DATA-DRIVEN MATCH SCENARIO ENGINE</b>\n"
             f"📅 <b>Generat:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
@@ -180,14 +176,14 @@ def proceseaza_si_trimite_bilet(target_chat_id, tinta_cota=5.0):
             f"🎯 <b>Tip Pariu:</b> <code>{s['tip']}</code> | <b>Cotă:</b> <code>{s['cota']}</code>\n"
         )
 
-    mesaj_ final = (
+    mesaj_final = (
         f"🏆 <b>DATA-DRIVEN MATCH SCENARIO ENGINE</b>\n"
         f"📅 <b>Generat:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
         f"🎯 <b>Țintă Cotă Solicitată:</b> <code>{tinta_cota}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"{' '.join(lines)}\n"
+        f"{''.join(lines)}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 <b>COTĂ TOTALĂ COMBINATĂ REALă:</b> <code>{round(cota_acumulata, 2)}</code> 🚀\n"
+        f"💰 <b>COTĂ TOTALĂ COMBINATĂ REALĂ:</b> <code>{round(cota_acumulata, 2)}</code> 🚀\n"
         f"🤖 <i>Generat prin ScraperAPI Proxy Engine</i>"
     )
     trimite_mesaj_telegram(target_chat_id, mesaj_final)
